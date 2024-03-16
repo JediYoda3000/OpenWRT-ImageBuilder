@@ -219,7 +219,11 @@ if [[ ${CREATE_VM} = true ]]; then
     do
     echo $LIST
 	# To convert to other formats see https://docs.openstack.org/image-guide/convert-images.html
-    qemu-img convert -f raw -O vmdk $LIST $LIST.vmdk 2>&1 | tee -a ${BUILD_LOG}
+      	#qemu-img convert -f raw -O qcow2 $LIST $LIST.qcow2 2>&1 | tee -a ${BUILD_LOG}
+    	#qemu-img convert -f raw -O qed $LIST $LIST.qed 2>&1 | tee -a ${BUILD_LOG}
+  	#qemu-img convert -f raw -O vdi $LIST $LIST.vdi 2>&1 | tee -a ${BUILD_LOG}
+      	#qemu-img convert -f raw -O vhd $LIST $LIST.vhd 2>&1 | tee -a ${BUILD_LOG}
+   	qemu-img convert -f raw -O vmdk $LIST $LIST.vmdk 2>&1 | tee -a ${BUILD_LOG}
     done
     # Clean up
     rm -f $VMDIR/*.img
