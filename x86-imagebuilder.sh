@@ -39,20 +39,28 @@ clear
 
 # Provide your specific recipe of OWRT packages for the custom build here. Below is example only.
     CUSTOM_PACKAGES="blockd block-mount kmod-fs-ext4 kmod-usb2 kmod-usb3 kmod-usb-storage kmod-usb-core usbutils \
-    -dnsmasq dnsmasq-full luci luci-app-ddns luci-app-mwan3 mwan3 luci-app-openvpn openvpn-openssl \
-    luci-app-samba4 luci-app-sqm sqm-scripts sqm-scripts-extra luci-app-attendedsysupgrade auc \
+    -dnsmasq dnsmasq-full luci luci-app-ddns  \
+    luci-app-ksmbd luci-app-sqm sqm-scripts sqm-scripts-extra luci-app-attendedsysupgrade auc \
     curl nano socat tcpdump python3-light python3-netifaces wsdd2 igmpproxy iptables-mod-ipopt \
-    usbmuxd libimobiledevice kmod-usb-net kmod-usb-net-asix-ax88179 kmod-mt7921u kmod-usb-net-rndis kmod-usb-net-ipheth"
+    usbmuxd libimobiledevice kmod-usb-net kmod-usb-net-asix-ax88179 kmod-mt7921u kmod-usb-net-rndis kmod-usb-net-ipheth \
+        byobu zsh blkid tmux screen	cfdisk resize2fs git git-http htop losetup luci-app-dockerman luci-app-ttyd luci-i18n-base-ru luci-proto-wireguard luci-app-wireguard vim-full"
 
 # Initialise prompt variables and set script defaults for x86 resize
     MOD_PARTSIZE=""          # true/false
     KERNEL_PARTSIZE=""       # variable set in MB
     ROOT_PARTSIZE=""         # variable set in MB (values over 8192 may give memory exhaustion errors)
     KERNEL_RESIZE_DEF="32"   # Default increased partition size in MB
-    ROOT_RESIZE_DEF="2048"   # Default increased partition size in MB
+    ROOT_RESIZE_DEF="512"   # Default increased partition size in MB
     IMAGE_TAG=""             # This ID tag will be added to the completed image filename
     CREATE_VM=""             # Create VMware images of the final build true/false
     BUILD_LOG="$(pwd)/build.log"
+
+#Set LAN config
+    MOD_LAN=""               # true/false
+    LAN_IP=""                # ip wan
+    LAN_GATEWAY=""           # gateway
+    LAN_DNS=""               # dns
+    LAN_SSH_ACCESS=""        # open ssh port true/false
 
 #######################################################################################################################
 # Script user prompts
@@ -66,7 +74,7 @@ echo
 if [[ -z ${VERSION} ]]; then
 LATEST_RELEASE=$(curl -s "$RELEASE_URL" | grep -oP "([0-9]+\.[0-9]+\.[0-9]+)" | sort -V | tail -n1)
 echo
-    echo -e "${LYELLOW}Enter OpenWRT version to build:${NC}"
+    echo -e "${LYELLOW}Enter OpenWRT version to build: ${NC}"
     while true; do
         read -p "    Enter a version number (latest stable release is $LATEST_RELEASE), or leave blank for latest snapshot: " VERSION
         [[ "${VERSION}" = "" ]] || [[ "${VERSION}" != "" ]] && break
@@ -130,6 +138,24 @@ echo
     fi
 fi
 
+# Set wan config?"
+if [[ -z ${MOD_LAN} ]]; then
+echo
+    echo -e "${LYELLOW}Configuring the interfaces:${NC}"
+    read -p "    Set LAN config [default = n] [y/N]: " PROMPT
+    if [[ ${PROMPT} =~ ^[Yy]$ ]]; then
+        MOD_LAN=true
+    else
+        MOD_LAN=false
+    fi
+    if [[ ${MOD_LAN} = true ]]; then
+        read -p "    Set IP: " LAN_IP
+        read -p "    Set Gateway: " LAN_GATEWAY
+        read -p "    Set DNS: " LAN_DNS
+    fi
+
+fi
+
 #######################################################################################################################
 # Setup the image builder working environment
 #######################################################################################################################
@@ -165,6 +191,19 @@ fi
     chown -R $SUDO_USER $INJECT_FILES
     chown -R $SUDO_USER $BUILD_ROOT
 
+    if [[ ${MOD_LAN} = true ]]; then
+        mkdir -p "${INJECT_FILES}/etc/uci-defaults/"
+        echo "uci -q batch << EOI
+set network.lan.proto='static'
+set network.lan.ipaddr='${LAN_IP}'
+set network.lan.gateway='${LAN_GATEWAY}'
+set network.lan.dns='${LAN_DNS}'
+commit
+EOI
+" > ${INJECT_FILES}/etc/uci-defaults/99-wan-set-defaults
+    fi
+
+
 # Option to pre-configure images with injected config files
     echo -e ${LYELLOW}
     read -p $"Copy optional config files to ${INJECT_FILES} now for inclusion into the new image. Enter to begin build..."
@@ -190,7 +229,7 @@ fi
 # Remove sudo access limits on source download
     chown -R $SUDO_USER:root $SOURCE_FILE
     chown -R $SUDO_USER:root $SOURCE_DIR
-    
+
 # Reconfigure the partition sizing source files (for x86 build only)
 if [[ ${MOD_PARTSIZE} = true ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
     # Patch the source partition size config settings
