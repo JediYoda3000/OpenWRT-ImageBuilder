@@ -20,9 +20,9 @@ if ! [[ $(id -u) = 0 ]]; then
     exit 1
 fi
 
-echo -e "${LYELLOW}Checking for curl...${NC}"
+echo -e "${LYELLOW}Checking for wget...${NC}"
 apt-get update -qq
-apt-get install curl -qq -y
+apt-get install wget sudo -qq -y
 
 clear
 
@@ -57,6 +57,7 @@ clear
 
 #Set LAN config
     MOD_LAN=""               # true/false
+    LAN_PROTO=""             # static/dhcp
     LAN_IP=""                # ip wan
     LAN_GATEWAY=""           # gateway
     LAN_DNS=""               # dns
@@ -72,7 +73,7 @@ echo
 
 # Prompt for the desired OWRT version
 if [[ -z ${VERSION} ]]; then
-LATEST_RELEASE=$(curl -s "$RELEASE_URL" | grep -oP "([0-9]+\.[0-9]+\.[0-9]+)" | sort -V | tail -n1)
+LATEST_RELEASE=$(wget -qO- "$RELEASE_URL" | grep -oP "([0-9]+\.[0-9]+\.[0-9]+)" | sort -V | tail -n1)
 echo
     echo -e "${LYELLOW}Enter OpenWRT version to build: ${NC}"
     while true; do
@@ -138,17 +139,28 @@ echo
     fi
 fi
 
-# Set wan config?"
+# Set Lan config?"
 if [[ -z ${MOD_LAN} ]]; then
 echo
-    echo -e "${LYELLOW}Configuring the interfaces:${NC}"
-    read -p "    Set LAN config [default = n] [y/N]: " PROMPT
+    echo -e "${LYELLOW}Configuring the LAN interface:${NC}"
+    read -p "    Change LAN config [y/N]: " PROMPT
     if [[ ${PROMPT} =~ ^[Yy]$ ]]; then
         MOD_LAN=true
     else
         MOD_LAN=false
     fi
+
     if [[ ${MOD_LAN} = true ]]; then
+        read -p "    Set LAN config DHCP [Y/n]: " PROMPT
+        if [[ ${PROMPT} =~ ^[Nn]$ ]]; then
+            LAN_PROTO="static"
+            PROMPT=false;
+        else
+            LAN_PROTO="dhcp"
+            PROMPT=true;
+        fi
+    fi
+    if [[ ${MOD_LAN} = true ]] && [[ ${PROMPT} = false ]]; then
         read -p "    Set IP: " LAN_IP
         read -p "    Set Gateway: " LAN_GATEWAY
         read -p "    Set DNS: " LAN_DNS
@@ -194,7 +206,7 @@ fi
     if [[ ${MOD_LAN} = true ]]; then
         mkdir -p "${INJECT_FILES}/etc/uci-defaults/"
         echo "uci -q batch << EOI
-set network.lan.proto='static'
+set network.lan.proto='${LAN_PROTO}'
 set network.lan.ipaddr='${LAN_IP}'
 set network.lan.gateway='${LAN_GATEWAY}'
 set network.lan.dns='${LAN_DNS}'
