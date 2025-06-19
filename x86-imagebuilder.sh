@@ -1,10 +1,10 @@
 #!/bin/bash
 #######################################################################################################################
-# Enhanced OpenWRT Image Builder with hybrid input system
-# Combines best of both worlds:
-# - Simplified Y/N prompts
-# - Traditional input for complex values
-# - Preserves all original functionality
+# Fixed OpenWRT Image Builder with dependency handling
+# Fixes:
+# - Added zstd support
+# - Proper archive extraction
+# - Better error handling
 #######################################################################################################################
 
 clear
@@ -21,10 +21,39 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Install basic deps
+# Install all required dependencies
 echo -e "${GREEN}Installing dependencies...${NC}"
 apt-get update -qq
-apt-get install -qq -y wget sudo jq
+apt-get install -qq -y wget sudo jq zstd qemu-utils build-essential libncurses-dev \
+libssl-dev python3-distutils rsync unzip zlib1g-dev file
+
+#######################################################################################################################
+# Fixed Build Functions
+#######################################################################################################################
+
+download_builder() {
+    local url="$1"
+    echo -e "${GREEN}Downloading image builder...${NC}"
+    if ! wget -q --show-progress "$url" -O openwrt-builder.tar.zst; then
+        echo -e "${LRED}Failed to download builder!${NC}"
+        exit 1
+    fi
+}
+
+extract_builder() {
+    echo -e "${GREEN}Extracting image builder...${NC}"
+    if ! tar -I zstd -xaf openwrt-builder.tar.zst; then
+        echo -e "${LRED}Failed to extract builder!${NC}"
+        exit 1
+    fi
+    
+    local builder_dir=$(find . -maxdepth 1 -type d -name 'openwrt-imagebuilder-*' | head -1)
+    if [[ -z "$builder_dir" ]]; then
+        echo -e "${LRED}Could not find extracted builder directory!${NC}"
+        exit 1
+    fi
+    echo "$builder_dir"
+}
 
 #######################################################################################################################
 # User Configuration
@@ -149,10 +178,9 @@ rm -rf "$BUILD_ROOT"
 mkdir -p {"$OUTPUT_DIR","$WORK_DIR"}
 
 # Download and extract builder
-echo -e "${GREEN}Downloading image builder...${NC}"
-wget -q --show-progress "$BUILDER_URL" -O openwrt-builder.tar.zst
-tar -xaf openwrt-builder.tar.zst
-cd openwrt-imagebuilder-*
+download_builder "$BUILDER_URL"
+BUILDER_DIR=$(extract_builder)
+cd "$BUILDER_DIR" || exit 1
 
 # Configure UEFI
 if $UEFI_ENABLED; then
@@ -198,7 +226,9 @@ make image PROFILE="$IMAGE_PROFILE" \
 if $CREATE_VM; then
     echo -e "${GREEN}Creating VMware image...${NC}"
     for img in "$OUTPUT_DIR"/*.img; do
-        qemu-img convert -f raw -O vmdk "$img" "${img%.*}.vmdk"
+        if [[ -f "$img" ]]; then
+            qemu-img convert -f raw -O vmdk "$img" "${img%.*}.vmdk"
+        fi
     done
 fi
 
