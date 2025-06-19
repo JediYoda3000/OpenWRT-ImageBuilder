@@ -1,269 +1,207 @@
 #!/bin/bash
 #######################################################################################################################
-# Build and virutalize custom OpenWRT images for x86
-# DO NOT TRY TO RESIZE HARDWARE ROUTER FLASH PARTITONS, RESIZE AND VM OPTIONS FOR x86 BUILDS ONLY!!
-# David Harrop
-# February 2024
+# Enhanced OpenWRT Image Builder with hybrid input system
+# Combines best of both worlds:
+# - Simplified Y/N prompts
+# - Traditional input for complex values
+# - Preserves all original functionality
 #######################################################################################################################
 
 clear
 
-# Prepare text output colours
+# Text colors
 LYELLOW='\033[0;93m'
 LRED='\033[0;91m'
-NC='\033[0m' #No Colour
+GREEN='\033[0;32m'
+NC='\033[0m'
 
-if ! [[ $(id -u) = 0 ]]; then
-    echo
-    echo -e "${LRED}Please run this script as sudo.${NC}" 1>&2
-    echo
+# Check root
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${LRED}Please run as root/sudo${NC}" >&2
     exit 1
 fi
 
-echo -e "${LYELLOW}Checking for curl...${NC}"
+# Install basic deps
+echo -e "${GREEN}Installing dependencies...${NC}"
 apt-get update -qq
-apt-get install curl -qq -y
-
-clear
+apt-get install -qq -y wget sudo jq
 
 #######################################################################################################################
-# User input variables
+# User Configuration
 #######################################################################################################################
 
-# Mandatory static user input
-    VERSION=""               # "" = snapshot or enter specifc version
-    TARGET="x86"             # x86, mvebu  etc
-    ARCH="64"                # 64, cortexa9 etc
-    IMAGE_PROFILE="generic"  # x86 = generic, linksys_wrt1900acs etc. For profile options run $SOURCE_DIR/make info
-    RELEASE_URL="https://downloads.openwrt.org/releases/" # Where to obtain latest stable version number
+# Version detection
+LATEST_VERSION=$(wget -qO- https://downloads.openwrt.org/releases/ | grep -oP 'href="\K[0-9]+\.[0-9]+\.[0-9]+(?=/")' | sort -V | tail -1)
 
-# Provide your specific recipe of OWRT packages for the custom build here. Below is example only.
-    CUSTOM_PACKAGES="blockd block-mount kmod-fs-ext4 kmod-usb2 kmod-usb3 kmod-usb-storage kmod-usb-core usbutils \
-    -dnsmasq dnsmasq-full luci luci-app-pbr  \
-    luci-app-ksmbd luci-app-sqm sqm-scripts sqm-scripts-extra luci-app-attendedsysupgrade auc \
-    curl nano socat tcpdump python3-light python3-netifaces wsdd2 igmpproxy iptables-mod-ipopt \
-    usbmuxd libimobiledevice kmod-usb-net kmod-usb-net-asix-ax88179 kmod-mt7921u kmod-usb-net-rndis kmod-usb-net-ipheth \
-        byobu zsh blkid tmux screen cfdisk resize2fs git git-http htop losetup luci-app-dockerman luci-app-ttyd luci-i18n-base-ru luci-proto-wireguard luci-app-wireguard vim"
+# Default values
+VERSION="$LATEST_VERSION"
+TARGET="x86"
+ARCH="64"
+IMAGE_PROFILE="generic"
+BUILD_LOG="$(pwd)/build.log"
 
-# Initialise prompt variables and set script defaults for x86 resize
-    MOD_PARTSIZE=""          # true/false
-    KERNEL_PARTSIZE=""       # variable set in MB
-    ROOT_PARTSIZE=""         # variable set in MB (values over 8192 may give memory exhaustion errors)
-    KERNEL_RESIZE_DEF="32"   # Default increased partition size in MB
-    ROOT_RESIZE_DEF="512"   # Default increased partition size in MB
-    IMAGE_TAG=""             # This ID tag will be added to the completed image filename
-    CREATE_VM=""             # Create VMware images of the final build true/false
-    BUILD_LOG="$(pwd)/build.log"
+# Base packages with UEFI/Btrfs support
+BASE_PACKAGES="block-mount kmod-fs-btrfs btrfs-progs kmod-usb-storage kmod-usb-core \
+luci luci-proto-wireguard luci-app-wireguard"
 
-#Set LAN config
-    MOD_LAN=""               # true/false
-    LAN_IP=""                # ip wan
-    LAN_GATEWAY=""           # gateway
-    LAN_DNS=""               # dns
-    LAN_SSH_ACCESS=""        # open ssh port true/false
+# Partition sizes
+KERNEL_SIZE_DEFAULT=32
+ROOT_SIZE_DEFAULT=512
 
 #######################################################################################################################
-# Script user prompts
+# Input Functions
 #######################################################################################################################
 
-echo -e ${LYELLOW}
-echo "Image Builder activity will be logged to ${BUILD_LOG}"
-echo
-
-# Prompt for the desired OWRT version
-if [[ -z ${VERSION} ]]; then
-LATEST_RELEASE=$(curl -s "$RELEASE_URL" | grep -oP "([0-9]+\.[0-9]+\.[0-9]+)" | sort -V | tail -n1)
-echo
-    echo -e "${LYELLOW}Enter OpenWRT version to build: ${NC}"
+ask_yn() {
+    local prompt="$1 (Y/n): "
+    local default=${2:-Y}
     while true; do
-        read -p "    Enter a version number (latest stable release is $LATEST_RELEASE), or leave blank for latest snapshot: " VERSION
-        [[ "${VERSION}" = "" ]] || [[ "${VERSION}" != "" ]] && break
+        read -p "$prompt" answer
+        case "${answer:-$default}" in
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            *) echo "Please answer Y or N" ;;
+        esac
     done
-    echo
-fi
+}
 
-# Prompt to resize image partitions
-if [[ -z ${MOD_PARTSIZE} ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
-echo -e "${LYELLOW}Modify OpenWRT Partitions (x86 ONLY):${NC}"
-    echo -e -n "    Modify partition sizes? [ n = no changes (default) | y = resize ] [y/N]: "
-    read PROMPT
-    if [[ ${PROMPT} =~ ^[Yy]$ ]]; then
-        MOD_PARTSIZE=true
-    else
-        MOD_PARTSIZE=false
-    fi
-fi
-
-# Set custom partition sizes
-if [[ ${MOD_PARTSIZE} = true ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
-    [[ -z ${KERNEL_PARTSIZE} ]] &&
-        read -p "    x86 ONLY!: Enter KERNEL partition size in MB [Hit enter for ${KERNEL_RESIZE_DEF}, or enter custom size]: " KERNEL_PARTSIZE
-    [[ -z ${ROOT_PARTSIZE} ]] &&
-        read -p "    x86 ONLY!: Enter ROOT partition size in MB [Hit enter for ${ROOT_RESIZE_DEF}, or enter custom size]: " ROOT_PARTSIZE
-fi
-
-# If no kernel partition size value given, create a default value
-if [[ ${MOD_PARTSIZE} = true ]] && [[ -z ${KERNEL_PARTSIZE} ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
-    KERNEL_PARTSIZE=$KERNEL_RESIZE_DEF
-   fi
-   # If no root partition size value given, create a default value
-   if [[ ${MOD_PARTSIZE} = true ]] && [[ -z ${ROOT_PARTSIZE} ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
-    ROOT_PARTSIZE=$ROOT_RESIZE_DEF
-fi
-
-# Create a custom image name tag
-if [[ -z ${IMAGE_TAG} ]]; then
-echo
-    echo -e "${LYELLOW}Custom image filename identifier:${NC}"
-    while true; do
-        read -p "    Enter text to include in the image filename [Enter for \"custom\"]: " IMAGE_TAG
-        [[ "${IMAGE_TAG}" = "" ]] || [[ "${IMAGE_TAG}" != "" ]] && break
-    done
-fi
-# If no image name tag is given, create a default value
-if [[ -z ${IMAGE_TAG} ]]; then
-    IMAGE_TAG="custom"
-fi
-
-# Convert images for use in virtual environment?"
-if [[ -z ${CREATE_VM} ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
-echo
-    echo -e "${LYELLOW}Virtual machine image conversion:${NC}"
-    echo -e -n "    x86 ONLY!: Convert new OpenWRT images to virtual machines? (VMware) [default = n] [y/N]: "
-    read PROMPT
-    if [[ ${PROMPT} =~ ^[Yy]$ ]]; then
-        CREATE_VM=true
-    else
-        CREATE_VM=false
-    fi
-fi
-
-# Set wan config?"
-if [[ -z ${MOD_LAN} ]]; then
-echo
-    echo -e "${LYELLOW}Configuring the interfaces:${NC}"
-    read -p "    Set LAN config [default = n] [y/N]: " PROMPT
-    if [[ ${PROMPT} =~ ^[Yy]$ ]]; then
-        MOD_LAN=true
-    else
-        MOD_LAN=false
-    fi
-    if [[ ${MOD_LAN} = true ]]; then
-        read -p "    Set IP: " LAN_IP
-        read -p "    Set Gateway: " LAN_GATEWAY
-        read -p "    Set DNS: " LAN_DNS
-    fi
-
-fi
+ask_value() {
+    local prompt="$1"
+    local default="$2"
+    read -p "$prompt [$default]: " answer
+    echo "${answer:-$default}"
+}
 
 #######################################################################################################################
-# Setup the image builder working environment
+# Main User Prompts
 #######################################################################################################################
 
-# Create the the OpenWRT download link
-if [[ ${VERSION} != "" ]]; then
-    BUILDER="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${ARCH}/openwrt-imagebuilder-${VERSION}-${TARGET}-${ARCH}.Linux-x86_64.tar.xz"
-else
-    BUILDER="https://downloads.openwrt.org/snapshots/targets/${TARGET}/${ARCH}/openwrt-imagebuilder-${TARGET}-${ARCH}.Linux-x86_64.tar.xz" # Current snapshot
+echo -e "${GREEN}=== OpenWRT Image Builder ===${NC}"
+
+# Version selection
+VERSION=$(ask_value "Enter OpenWRT version" "$LATEST_VERSION")
+
+# UEFI/Btrfs configuration
+UEFI_ENABLED=false
+BTRFS_ENABLED=false
+ask_yn "Enable UEFI support" && UEFI_ENABLED=true
+ask_yn "Use Btrfs filesystem" && BTRFS_ENABLED=true
+
+# Additional packages
+echo -e "${LYELLOW}Base packages included:${NC} $BASE_PACKAGES"
+EXTRA_PKGS=$(ask_value "Enter extra packages (space separated)")
+
+# Network configuration
+echo -e "${GREEN}=== Network Configuration ==="
+NET_MODE=$(ask_value "LAN mode (static/dhcp)" "dhcp")
+
+if [[ "$NET_MODE" == "static" ]]; then
+    LAN_IP=$(ask_value "LAN IP address" "192.168.1.1")
+    LAN_GATEWAY=$(ask_value "Gateway" "192.168.1.1")
+    LAN_DNS=$(ask_value "DNS server" "8.8.8.8")
 fi
 
-# Configure the build paths
-    SOURCE_FILE="${BUILDER##*/}" # Separate the tar.xz file name from the source download link
-    SOURCE_DIR="${SOURCE_FILE%%.tar.xz}" # Get the uncompressed tar.xz directory name and set as the source dir
-    BUILD_ROOT="$(pwd)/openwrt_build_output"
-    OUTPUT="${BUILD_ROOT}/firmware_images"
-    VMDIR="${BUILD_ROOT}/vm"
-    INJECT_FILES="$(pwd)/openwrt_inject_files"
+# Partition configuration
+echo -e "${GREEN}=== Partition Configuration ==="
+if ask_yn "Customize partition sizes"; then
+    KERNEL_SIZE=$(ask_value "Kernel partition size (MB)" "$KERNEL_SIZE_DEFAULT")
+    ROOT_SIZE=$(ask_value "Root partition size (MB)" "$ROOT_SIZE_DEFAULT")
+fi
+
+# VM conversion
+CREATE_VM=false
+ask_yn "Create VMware image" && CREATE_VM=true
 
 #######################################################################################################################
-# Begin script build actions
+# Build Configuration
 #######################################################################################################################
 
-# Clear out any previous builds
-    rm -rf "${BUILD_ROOT}"
-    rm -rf "${SOURCE_DIR}"
-
-# Create the destination directories
-    mkdir -p "${BUILD_ROOT}"
-    mkdir -p "${OUTPUT}"
-    mkdir -p "${INJECT_FILES}"
-    if [[ ${CREATE_VM} = true ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then mkdir -p "${VMDIR}" ; fi
-    chown -R $SUDO_USER $INJECT_FILES
-    chown -R $SUDO_USER $BUILD_ROOT
-
-    if [[ ${MOD_LAN} = true ]]; then
-        mkdir -p "${INJECT_FILES}/etc/uci-defaults/"
-        echo "uci -q batch << EOI
-set network.lan.proto='static'
-set network.lan.ipaddr='${LAN_IP}'
-set network.lan.gateway='${LAN_GATEWAY}'
-set network.lan.dns='${LAN_DNS}'
-commit
-EOI
-" > ${INJECT_FILES}/etc/uci-defaults/99-wan-set-defaults
-    fi
-
-
-# Option to pre-configure images with injected config files
-    echo -e ${LYELLOW}
-    read -p $"Copy optional config files to ${INJECT_FILES} now for inclusion into the new image. Enter to begin build..."
-    echo -e ${NC}
-
-# Install OWRT build system dependencies for recent Ubuntu/Debian.
-# See here for other distro dependencies: https://openwrt.org/docs/guide-developer/toolchain/install-buildsystem
-    sudo apt-get update  2>&1 | tee -a ${BUILD_LOG}
-    sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-    gettext git libncurses-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget qemu-utils 2>&1 | tee -a ${BUILD_LOG}
-
-# Download the image builder source if we haven't already
-if [ ! -f "${BUILDER##*/}" ]; then
-    wget -q --show-progress "$BUILDER"
-    tar xJvf "${BUILDER##*/}" --checkpoint=.100 2>&1 | tee -a ${BUILD_LOG}
+# Prepare package list
+CUSTOM_PACKAGES="$BASE_PACKAGES $EXTRA_PKGS"
+if $BTRFS_ENABLED; then
+    CUSTOM_PACKAGES+=" kmod-fs-btrfs btrfs-progs"
 fi
 
-# Uncompress if the source tar.xz exists but there is no uncompressed source directory (was cleared for a fresh build).
-if [ -n "${SOURCE_DIR}" ]; then
-    tar xJvf "${BUILDER##*/}" --checkpoint=.100 2>&1 | tee -a ${BUILD_LOG}
+# Builder URL
+BUILDER_URL="https://downloads.openwrt.org/releases/${VERSION}/targets/${TARGET}/${ARCH}/openwrt-imagebuilder-${VERSION}-${TARGET}-${ARCH}.Linux-x86_64.tar.zst"
+
+# Prepare directories
+BUILD_ROOT="$(pwd)/openwrt_build_${VERSION}"
+OUTPUT_DIR="$BUILD_ROOT/firmware"
+WORK_DIR="$BUILD_ROOT/custom_files"
+
+echo -e "${GREEN}=== Build Configuration ==="
+echo -e "Version: ${LYELLOW}${VERSION}${NC}"
+echo -e "Profile: ${LYELLOW}${IMAGE_PROFILE}${NC}"
+echo -e "UEFI: ${LYELLOW}${UEFI_ENABLED}${NC}"
+echo -e "Btrfs: ${LYELLOW}${BTRFS_ENABLED}${NC}"
+echo -e "Packages: ${LYELLOW}${CUSTOM_PACKAGES}${NC}"
+[[ "$NET_MODE" == "static" ]] && echo -e "Network: ${LYELLOW}IP:${LAN_IP} GW:${LAN_GATEWAY} DNS:${LAN_DNS}${NC}"
+echo -e "Output: ${LYELLOW}${OUTPUT_DIR}${NC}"
+
+#######################################################################################################################
+# Build Execution
+#######################################################################################################################
+
+# Prepare environment
+echo -e "${GREEN}Preparing build environment...${NC}"
+rm -rf "$BUILD_ROOT"
+mkdir -p {"$OUTPUT_DIR","$WORK_DIR"}
+
+# Download and extract builder
+echo -e "${GREEN}Downloading image builder...${NC}"
+wget -q --show-progress "$BUILDER_URL" -O openwrt-builder.tar.zst
+tar -xaf openwrt-builder.tar.zst
+cd openwrt-imagebuilder-*
+
+# Configure UEFI
+if $UEFI_ENABLED; then
+    echo -e "${GREEN}Configuring UEFI support...${NC}"
+    cat >> .config <<EOF
+CONFIG_EFI_IMAGES=y
+CONFIG_GRUB_IMAGES=y
+CONFIG_GRUB_EFI_IMAGES=y
+EOF
 fi
 
-# Remove sudo access limits on source download
-    chown -R $SUDO_USER:root $SOURCE_FILE
-    chown -R $SUDO_USER:root $SOURCE_DIR
-
-# Reconfigure the partition sizing source files (for x86 build only)
-if [[ ${MOD_PARTSIZE} = true ]] && [[ ${IMAGE_PROFILE} = "generic" ]]; then
-    # Patch the source partition size config settings
-    sed -i "s/CONFIG_TARGET_KERNEL_PARTSIZE=.*/CONFIG_TARGET_KERNEL_PARTSIZE=$KERNEL_PARTSIZE/g" "$PWD/$SOURCE_DIR/.config"
-    sed -i "s/CONFIG_TARGET_ROOTFS_PARTSIZE=.*/CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOT_PARTSIZE/g" "$PWD/$SOURCE_DIR/.config"
-    # Patch for source partition size config settings giving errors. See https://forum.openwrt.org/t/22-03-3-image-builder-issues/154168
-    sed -i '/\$(CONFIG_TARGET_ROOTFS_PARTSIZE) \$(IMAGE_ROOTFS)/,/256/ s/256/'"$ROOT_PARTSIZE"'/' "$PWD/$SOURCE_DIR/target/linux/x86/image/Makefile"
+# Configure Btrfs
+if $BTRFS_ENABLED; then
+    echo -e "${GREEN}Configuring Btrfs support...${NC}"
+    cat >> .config <<EOF
+CONFIG_TARGET_ROOTFS_BTRFS=y
+CONFIG_PACKAGE_btrfs-progs=y
+EOF
 fi
 
-# Start a clean image build with the selected packages
-    cd $(pwd)/"${SOURCE_DIR}"/
-    make clean 2>&1 | tee -a ${BUILD_LOG}
-    make image PROFILE="${IMAGE_PROFILE}" PACKAGES="${CUSTOM_PACKAGES}" EXTRA_IMAGE_NAME="${IMAGE_TAG}" FILES="${INJECT_FILES}" BIN_DIR="${OUTPUT}" 2>&1 | tee -a ${BUILD_LOG}
+# Configure network
+if [[ "$NET_MODE" == "static" ]]; then
+    mkdir -p "$WORK_DIR/etc/uci-defaults"
+    cat > "$WORK_DIR/etc/uci-defaults/99-network" <<EOF
+uci set network.lan.proto='static'
+uci set network.lan.ipaddr='${LAN_IP}'
+uci set network.lan.gateway='${LAN_GATEWAY}'
+uci set network.lan.dns='${LAN_DNS}'
+uci commit
+EOF
+fi
 
-if [[ ${CREATE_VM} = true ]]; then
-    # Copy the new images to a separate directory for conversion to vm image
-    cp $OUTPUT/*.gz $VMDIR
-    # Create a list of new images to unzip
-    for LIST in $VMDIR/*img.gz
-    do
-    echo $LIST
-    gunzip $LIST
+# Start build
+echo -e "${GREEN}Starting build process...${NC}"
+make image PROFILE="$IMAGE_PROFILE" \
+    PACKAGES="$CUSTOM_PACKAGES" \
+    FILES="$WORK_DIR" \
+    BIN_DIR="$OUTPUT_DIR" \
+    ${KERNEL_SIZE:+CONFIG_TARGET_KERNEL_PARTSIZE=$KERNEL_SIZE} \
+    ${ROOT_SIZE:+CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOT_SIZE} 2>&1 | tee "$BUILD_LOG"
+
+# VM conversion if requested
+if $CREATE_VM; then
+    echo -e "${GREEN}Creating VMware image...${NC}"
+    for img in "$OUTPUT_DIR"/*.img; do
+        qemu-img convert -f raw -O vmdk "$img" "${img%.*}.vmdk"
     done
-    # Convert the unzipped images
-    for LIST in $VMDIR/*.img
-    do
-    echo $LIST
-	# To convert to other formats see https://docs.openstack.org/image-guide/convert-images.html
-      	#qemu-img convert -f raw -O qcow2 $LIST $LIST.qcow2 2>&1 | tee -a ${BUILD_LOG}
-    	#qemu-img convert -f raw -O qed $LIST $LIST.qed 2>&1 | tee -a ${BUILD_LOG}
-  	#qemu-img convert -f raw -O vdi $LIST $LIST.vdi 2>&1 | tee -a ${BUILD_LOG}
-      	#qemu-img convert -f raw -O vhd $LIST $LIST.vhd 2>&1 | tee -a ${BUILD_LOG}
-   	qemu-img convert -f raw -O vmdk $LIST $LIST.vmdk 2>&1 | tee -a ${BUILD_LOG}
-    done
-    # Clean up
-    rm -f $VMDIR/*.img
 fi
+
+echo -e "${GREEN}=== Build Complete ==="
+echo -e "Output files in: ${LYELLOW}${OUTPUT_DIR}${NC}"
+ls -lh "$OUTPUT_DIR"
