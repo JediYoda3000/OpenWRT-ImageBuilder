@@ -72,8 +72,8 @@ BUILD_LOG="$(pwd)/build.log"
 # Base packages with UEFI/Btrfs support
 # Обновленные базовые пакеты
 BASE_PACKAGES="blockd block-mount kmod-fs-ext4 kmod-usb2 kmod-usb3 kmod-usb-storage kmod-usb-core usbutils \
--dnsmasq dnsmasq-full luci luci-app-pbr \
-luci-app-ksmbd luci-app-sqm sqm-scripts sqm-scripts-extra luci-app-attendedsysupgrade auc \
+dnsmasq-full luci luci-app-pbr \
+luci-app-ksmbd luci-app-sqm sqm-scripts sqm-scripts-extra luci-app-attendedsysupgrade \
 curl nano socat tcpdump python3-light python3-netifaces wsdd2 igmpproxy iptables-mod-ipopt \
 usbmuxd libimobiledevice kmod-usb-net kmod-usb-net-asix-ax88179 kmod-mt7921u kmod-usb-net-rndis kmod-usb-net-ipheth \
 byobu zsh blkid tmux screen cfdisk resize2fs git git-http htop losetup luci-app-dockerman luci-app-ttyd luci-i18n-base-ru luci-proto-wireguard luci-app-wireguard vim"
@@ -220,20 +220,39 @@ fi
 
 # Start build
 echo -e "${GREEN}Starting build process...${NC}"
-if ! make image PROFILE="$IMAGE_PROFILE" \
-    PACKAGES="$CUSTOM_PACKAGES" \
-    FILES="$WORK_DIR" \
-    BIN_DIR="$OUTPUT_DIR" \
-    ${KERNEL_SIZE:+CONFIG_TARGET_KERNEL_PARTSIZE=$KERNEL_SIZE} \
-    ${ROOT_SIZE:+CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOT_SIZE} 2>&1 | tee "$BUILD_LOG"
-then
-    echo -e "${LYELLOW}Build failed, retrying without problematic packages...${NC}"
-    CUSTOM_PACKAGES="${CUSTOM_PACKAGES//ppp-mod-pppoe/}"
-    make image PROFILE="$IMAGE_PROFILE" \
+{
+    # Первая попытка сборки с полным набором пакетов
+    make V=s -j1 image PROFILE="$IMAGE_PROFILE" \
         PACKAGES="$CUSTOM_PACKAGES" \
         FILES="$WORK_DIR" \
-        BIN_DIR="$OUTPUT_DIR"
-fi
+        BIN_DIR="$OUTPUT_DIR" \
+        ${KERNEL_SIZE:+CONFIG_TARGET_KERNEL_PARTSIZE=$KERNEL_SIZE} \
+        ${ROOT_SIZE:+CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOT_SIZE} 2>&1 | tee "$BUILD_LOG"
+} || {
+    echo -e "${LRED}First build attempt failed, analyzing errors...${NC}"
+    
+    # Анализ лога для поиска проблемных пакетов
+    FAILED_PKG=$(grep -oE "package/.* failed" "$BUILD_LOG" | head -1 | awk '{print $1}')
+    if [[ -n "$FAILED_PKG" ]]; then
+        echo -e "${LYELLOW}Detected failed package: ${FAILED_PKG}${NC}"
+        echo -e "${LYELLOW}Attempting build without problematic packages...${NC}"
+        
+        # Удаляем проблемный пакет и пробуем снова
+        FILTERED_PACKAGES=$(echo "$CUSTOM_PACKAGES" | sed "s/$FAILED_PKG//g")
+        
+        make V=s -j1 image PROFILE="$IMAGE_PROFILE" \
+            PACKAGES="$FILTERED_PACKAGES" \
+            FILES="$WORK_DIR" \
+            BIN_DIR="$OUTPUT_DIR" \
+            ${KERNEL_SIZE:+CONFIG_TARGET_KERNEL_PARTSIZE=$KERNEL_SIZE} \
+            ${ROOT_SIZE:+CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOT_SIZE} 2>&1 | tee -a "$BUILD_LOG"
+    else
+        echo -e "${LRED}Could not identify specific failed package. Full log below:${NC}"
+        cat "$BUILD_LOG"
+        exit 1
+    fi
+}
+
 # VM conversion if requested
 if $CREATE_VM; then
     echo -e "${GREEN}Creating VMware image...${NC}"
