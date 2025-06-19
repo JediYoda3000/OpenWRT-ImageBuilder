@@ -41,18 +41,18 @@ download_builder() {
 }
 
 extract_builder() {
-    echo -e "${GREEN}Extracting image builder...${NC}"
+    echo -e "${GREEN}Extracting image builder...${NC}" >&2  # Добавлено >&2 для вывода в stderr
     if ! tar -I zstd -xaf openwrt-builder.tar.zst; then
-        echo -e "${LRED}Failed to extract builder!${NC}"
+        echo -e "${LRED}Failed to extract builder!${NC}" >&2
         exit 1
     fi
     
     local builder_dir=$(find . -maxdepth 1 -type d -name 'openwrt-imagebuilder-*' | head -1)
     if [[ -z "$builder_dir" ]]; then
-        echo -e "${LRED}Could not find extracted builder directory!${NC}"
+        echo -e "${LRED}Could not find extracted builder directory!${NC}" >&2
         exit 1
     fi
-    echo "$builder_dir"
+    echo "$builder_dir"  # Выводим только имя директории без цветовых кодов
 }
 
 #######################################################################################################################
