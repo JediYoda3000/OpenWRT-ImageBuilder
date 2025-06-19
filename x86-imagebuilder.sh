@@ -71,7 +71,7 @@ BUILD_LOG="$(pwd)/build.log"
 
 # Base packages with UEFI/Btrfs support
 BASE_PACKAGES="block-mount kmod-fs-btrfs btrfs-progs kmod-usb-storage kmod-usb-core \
-luci luci-proto-wireguard luci-app-wireguard"
+luci luci-proto-wireguard luci-app-wireguard ppp"
 
 # Partition sizes
 KERNEL_SIZE_DEFAULT=32
@@ -215,13 +215,20 @@ fi
 
 # Start build
 echo -e "${GREEN}Starting build process...${NC}"
-make image PROFILE="$IMAGE_PROFILE" \
+if ! make image PROFILE="$IMAGE_PROFILE" \
     PACKAGES="$CUSTOM_PACKAGES" \
     FILES="$WORK_DIR" \
     BIN_DIR="$OUTPUT_DIR" \
     ${KERNEL_SIZE:+CONFIG_TARGET_KERNEL_PARTSIZE=$KERNEL_SIZE} \
     ${ROOT_SIZE:+CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOT_SIZE} 2>&1 | tee "$BUILD_LOG"
-
+then
+    echo -e "${LYELLOW}Build failed, retrying without problematic packages...${NC}"
+    CUSTOM_PACKAGES="${CUSTOM_PACKAGES//ppp-mod-pppoe/}"
+    make image PROFILE="$IMAGE_PROFILE" \
+        PACKAGES="$CUSTOM_PACKAGES" \
+        FILES="$WORK_DIR" \
+        BIN_DIR="$OUTPUT_DIR"
+fi
 # VM conversion if requested
 if $CREATE_VM; then
     echo -e "${GREEN}Creating VMware image...${NC}"
